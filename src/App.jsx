@@ -36,13 +36,27 @@ const firebaseConfig = {
 let auth = null;
 let db = null;
 
-if (firebaseConfig.apiKey && firebaseConfig.projectId) {
-  const firebaseApp = initializeApp(firebaseConfig);
-  auth = getAuth(firebaseApp);
-  db = getFirestore(firebaseApp);
+try {
+  if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+    const firebaseApp = initializeApp(firebaseConfig);
+    auth = getAuth(firebaseApp);
+    db = getFirestore(firebaseApp);
+  }
+} catch (error) {
+  console.error("Firebase initialization error:", error);
 }
 
-const EMPTY_BOARD = Array(9).fill(null);
+const EMPTY_BOARD = [
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+];
 
 const WIN_LINES = [
   [0, 1, 2],
@@ -51,12 +65,18 @@ const WIN_LINES = [
   [0, 3, 6],
   [1, 4, 7],
   [2, 5, 8],
-  [0, 4, 8],
+  [0, 4, 6],
   [2, 4, 6],
 ];
 
 function getWinner(board) {
-  for (const [a, b, c] of WIN_LINES) {
+  for (let i = 0; i < WIN_LINES.length; i++) {
+    const line = WIN_LINES[i];
+
+    const a = line[0];
+    const b = line[1];
+    const c = line[2];
+
     if (
       board[a] &&
       board[a] === board[b] &&
@@ -66,64 +86,110 @@ function getWinner(board) {
     }
   }
 
-  return board.every(Boolean) ? "draw" : null;
+  let full = true;
+
+  for (let i = 0; i < board.length; i++) {
+    if (!board[i]) {
+      full = false;
+      break;
+    }
+  }
+
+  if (full) {
+    return "draw";
+  }
+
+  return null;
 }
 
 function generateRoomCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(
+      Math.floor(Math.random() * chars.length)
+    );
+  }
+
+  return code;
 }
 
-// Strong minimax bot
-function getBestBotMove(board, botMark = "O") {
+function isValidRoom(roomCode) {
+  return /^[A-Z0-9]{6}$/.test(roomCode);
+}
+
+/* ============================================================
+   UNBEATABLE BOT
+============================================================ */
+
+function getBestBotMove(board, botMark) {
   const humanMark = botMark === "X" ? "O" : "X";
 
   function minimax(currentBoard, player) {
-    const result = getWinner(currentBoard);
+    const winner = getWinner(currentBoard);
 
-    if (result === botMark) return 10;
-    if (result === humanMark) return -10;
-    if (result === "draw") return 0;
+    if (winner === botMark) {
+      return 10;
+    }
+
+    if (winner === humanMark) {
+      return -10;
+    }
+
+    if (winner === "draw") {
+      return 0;
+    }
 
     const scores = [];
 
-    currentBoard.forEach((cell, index) => {
-      if (!cell) {
-        const nextBoard = [...currentBoard];
-        nextBoard[index] = player;
+    for (let i = 0; i < currentBoard.length; i++) {
+      if (!currentBoard[i]) {
+        const nextBoard = currentBoard.slice();
+        nextBoard[i] = player;
 
-        scores.push(
-          minimax(
-            nextBoard,
-            player === botMark ? humanMark : botMark
-          )
+        const score = minimax(
+          nextBoard,
+          player === botMark ? humanMark : botMark
         );
-      }
-    });
 
-    return player === botMark
-      ? Math.max(...scores)
-      : Math.min(...scores);
+        scores.push(score);
+      }
+    }
+
+    if (player === botMark) {
+      return Math.max.apply(null, scores);
+    }
+
+    return Math.min.apply(null, scores);
   }
 
   let bestScore = -Infinity;
   let bestMove = -1;
 
-  board.forEach((cell, index) => {
-    if (!cell) {
-      const nextBoard = [...board];
-      nextBoard[index] = botMark;
+  for (let i = 0; i < board.length; i++) {
+    if (!board[i]) {
+      const nextBoard = board.slice();
+      nextBoard[i] = botMark;
 
-      const score = minimax(nextBoard, humanMark);
+      const score = minimax(
+        nextBoard,
+        humanMark
+      );
 
       if (score > bestScore) {
         bestScore = score;
-        bestMove = index;
+        bestMove = i;
       }
     }
-  });
+  }
 
   return bestMove;
 }
+
+/* ============================================================
+   APP
+============================================================ */
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -138,7 +204,9 @@ export default function App() {
 
   const [mode, setMode] = useState("home");
 
-  const [board, setBoard] = useState(EMPTY_BOARD);
+  const [board, setBoard] = useState(
+    EMPTY_BOARD.slice()
+  );
 
   const [turn, setTurn] = useState("X");
 
@@ -153,147 +221,241 @@ export default function App() {
   const [copied, setCopied] = useState(false);
 
   const result = useMemo(
-    () => getWinner(board),
+    function () {
+      return getWinner(board);
+    },
     [board]
   );
 
-  // Firebase anonymous authentication
-  useEffect(() => {
-    if (!auth) {
-      setStatus("Firebase is not configured.");
-      return;
-    }
+  /* ============================================================
+     AUTH
+  ============================================================ */
 
-    signInAnonymously(auth).catch((error) => {
-      console.error(error);
-      setStatus("Authentication failed.");
-    });
-
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      (currentUser) => {
-        setUser(currentUser);
+  useEffect(
+    function () {
+      if (!auth) {
+        setStatus("Firebase is not configured.");
+        return;
       }
-    );
 
-    return unsubscribe;
-  }, []);
-
-  // Load player profile
-  useEffect(() => {
-    if (!user || !db) return;
-
-    getDoc(doc(db, "players", user.uid))
-      .then((snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-
-          setName(data.name || "");
-
-          setStats(
-            data.stats || {
-              wins: 0,
-              losses: 0,
-              draws: 0,
-            }
-          );
+      signInAnonymously(auth).catch(
+        function (error) {
+          console.error(error);
+          setStatus("Authentication failed.");
         }
-      })
-      .catch((error) => {
-        console.error(error);
-      });
-  }, [user]);
+      );
 
-  // Detect invite link
-  useEffect(() => {
-    const params = new URLSearchParams(
-      window.location.search
-    );
+      const unsubscribe =
+        onAuthStateChanged(
+          auth,
+          function (currentUser) {
+            setUser(currentUser);
+          }
+        );
 
-    const inviteRoom = params.get("room");
+      return unsubscribe;
+    },
+    []
+  );
 
-    if (inviteRoom) {
-      const cleanRoom = inviteRoom
-        .trim()
-        .toUpperCase();
+  /* ============================================================
+     LOAD PROFILE
+  ============================================================ */
 
-      if (/^[A-Z0-9]{6}$/.test(cleanRoom)) {
-        setRoom(cleanRoom);
-        setMode("join");
+  useEffect(
+    function () {
+      if (!user || !db) {
+        return;
       }
-    }
-  }, []);
 
-  // ============================================================
-  // IMPORTANT ONLINE ROOM LISTENER
-  // Never call Firestore until room is a valid 6-character code.
-  // ============================================================
-  useEffect(() => {
+      getDoc(
+        doc(db, "players", user.uid)
+      )
+        .then(function (snapshot) {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+
+            setName(data.name || "");
+
+            setStats(
+              data.stats || {
+                wins: 0,
+                losses: 0,
+                draws: 0,
+              }
+            );
+          }
+        })
+        .catch(function (error) {
+          console.error(
+            "Profile loading error:",
+            error
+          );
+        });
+    },
+    [user]
+  );
+
+  /* ============================================================
+     INVITE LINK
+  ============================================================ */
+
+  useEffect(
+    function () {
+      const params =
+        new URLSearchParams(
+          window.location.search
+        );
+
+      const inviteRoom =
+        params.get("room");
+
+      if (inviteRoom) {
+        const cleanRoom =
+          inviteRoom
+            .trim()
+            .toUpperCase();
+
+        if (isValidRoom(cleanRoom)) {
+          setRoom(cleanRoom);
+          setMode("join");
+        }
+      }
+    },
+    []
+  );
+
+  /* ============================================================
+     REAL-TIME FIRESTORE LISTENER
+
+     IMPORTANT:
+     Never listen to "games".
+     Always listen to "games/{room}".
+  ============================================================ */
+
+  useEffect(
+    function () {
+      if (
+        mode !== "online" ||
+        !db ||
+        !user ||
+        !room ||
+        !isValidRoom(room)
+      ) {
+        return;
+      }
+
+      const roomRef = doc(
+        db,
+        "games",
+        room
+      );
+
+      const unsubscribe =
+        onSnapshot(
+          roomRef,
+          function (snapshot) {
+            if (!snapshot.exists()) {
+              setStatus("ROOM NOT FOUND");
+              return;
+            }
+
+            const game =
+              snapshot.data();
+
+            const firebaseBoard =
+              Array.isArray(game.board)
+                ? game.board
+                : EMPTY_BOARD.slice();
+
+            setBoard(firebaseBoard);
+
+            setTurn(
+              game.turn || "X"
+            );
+
+            if (
+              game.host === user.uid
+            ) {
+              setMyMark("X");
+            } else if (
+              game.guest === user.uid
+            ) {
+              setMyMark("O");
+            }
+
+            if (
+              game.status === "waiting"
+            ) {
+              setStatus(
+                "WAITING FOR OPPONENT"
+              );
+            } else if (
+              game.status === "playing"
+            ) {
+              const playerMark =
+                game.host === user.uid
+                  ? "X"
+                  : "O";
+
+              if (
+                game.turn ===
+                playerMark
+              ) {
+                setStatus(
+                  "YOUR TURN"
+                );
+              } else {
+                setStatus(
+                  "OPPONENT'S TURN"
+                );
+              }
+            } else if (
+              game.status === "done"
+            ) {
+              setStatus(
+                game.result ||
+                  "GAME OVER"
+              );
+            }
+          },
+          function (error) {
+            console.error(
+              "Room listener error:",
+              error
+            );
+
+            setStatus(
+              "Unable to connect to this room."
+            );
+          }
+        );
+
+      return unsubscribe;
+    },
+    [mode, room, user]
+  );
+
+  /* ============================================================
+     SAVE STATS
+  ============================================================ */
+
+  async function saveResult(
+    resultType
+  ) {
     if (
-      mode !== "online" ||
       !db ||
       !user ||
-      !room ||
-      !/^[A-Z0-9]{6}$/.test(room)
+      !name.trim()
     ) {
       return;
     }
 
-    const roomRef = doc(db, "games", room);
-
-    const unsubscribe = onSnapshot(
-      roomRef,
-      (snapshot) => {
-        if (!snapshot.exists()) {
-          setStatus("ROOM NOT FOUND");
-          return;
-        }
-
-        const game = snapshot.data();
-
-        setBoard(
-          Array.isArray(game.board)
-            ? game.board
-            : EMPTY_BOARD
-        );
-
-        setTurn(game.turn || "X");
-
-        if (game.host === user.uid) {
-          setMyMark("X");
-        } else if (game.guest === user.uid) {
-          setMyMark("O");
-        }
-
-        if (game.status === "waiting") {
-          setStatus("WAITING FOR OPPONENT");
-        } else if (game.status === "playing") {
-          setStatus(
-            game.turn ===
-              (game.host === user.uid ? "X" : "O")
-              ? "YOUR TURN"
-              : "OPPONENT'S TURN"
-          );
-        } else if (game.status === "done") {
-          setStatus(game.result || "GAME OVER");
-        }
-      },
-      (error) => {
-        console.error("Room listener error:", error);
-        setStatus("Unable to connect to this room.");
-      }
-    );
-
-    return unsubscribe;
-  }, [mode, room, user]);
-
-  // ============================================================
-  // SAVE PLAYER RESULT
-  // ============================================================
-  async function saveResult(resultType) {
-    if (!db || !user || !name.trim()) return;
-
-    const newStats = { ...stats };
+    const newStats = {
+      wins: stats.wins,
+      losses: stats.losses,
+      draws: stats.draws,
+    };
 
     if (resultType === "win") {
       newStats.wins += 1;
@@ -311,24 +473,36 @@ export default function App() {
 
     try {
       await setDoc(
-        doc(db, "players", user.uid),
+        doc(
+          db,
+          "players",
+          user.uid
+        ),
         {
           name: name.trim(),
           stats: newStats,
-          updatedAt: serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
         },
-        { merge: true }
+        {
+          merge: true,
+        }
       );
     } catch (error) {
-      console.error("Saving player failed:", error);
+      console.error(
+        "Save stats error:",
+        error
+      );
     }
   }
 
-  // ============================================================
-  // PRO BOT
-  // ============================================================
+  /* ============================================================
+     BOT GAME
+  ============================================================ */
+
   function playBot(index) {
     if (
+      mode !== "bot" ||
       result ||
       board[index] ||
       turn !== "X"
@@ -336,200 +510,293 @@ export default function App() {
       return;
     }
 
-    const playerBoard = [...board];
+    const playerBoard =
+      board.slice();
 
     playerBoard[index] = "X";
 
-    const playerResult = getWinner(playerBoard);
+    const playerResult =
+      getWinner(playerBoard);
 
     setBoard(playerBoard);
 
     if (playerResult) {
-      setStatus(
-        playerResult === "draw"
-          ? "DRAW"
-          : "YOU WIN"
-      );
-
-      saveResult(
-        playerResult === "X"
-          ? "win"
-          : "draw"
-      );
+      if (playerResult === "X") {
+        setStatus("YOU WIN");
+        saveResult("win");
+      } else {
+        setStatus("DRAW");
+        saveResult("draw");
+      }
 
       return;
     }
 
     setTurn("O");
+    setStatus("BOT THINKING...");
 
-    setTimeout(() => {
-      const botMove = getBestBotMove(
-        playerBoard,
-        "O"
-      );
+    setTimeout(
+      function () {
+        const botMove =
+          getBestBotMove(
+            playerBoard,
+            "O"
+          );
 
-      if (botMove < 0) return;
+        if (botMove < 0) {
+          return;
+        }
 
-      const botBoard = [...playerBoard];
+        const botBoard =
+          playerBoard.slice();
 
-      botBoard[botMove] = "O";
+        botBoard[botMove] = "O";
 
-      const botResult = getWinner(botBoard);
+        const botResult =
+          getWinner(botBoard);
 
-      setBoard(botBoard);
+        setBoard(botBoard);
 
-      if (botResult) {
-        setStatus(
-          botResult === "draw"
-            ? "DRAW"
-            : "PRO BOT WINS"
-        );
+        if (botResult) {
+          if (
+            botResult === "O"
+          ) {
+            setStatus(
+              "PRO BOT WINS"
+            );
 
-        saveResult(
-          botResult === "O"
-            ? "loss"
-            : "draw"
-        );
-      } else {
+            saveResult("loss");
+          } else {
+            setStatus("DRAW");
+            saveResult("draw");
+          }
+
+          return;
+        }
+
         setTurn("X");
-      }
-    }, 300);
+        setStatus("YOUR TURN");
+      },
+      350
+    );
   }
 
-  // ============================================================
-  // CREATE ROOM
-  // ============================================================
+  /* ============================================================
+     CREATE ROOM
+  ============================================================ */
+
   async function createRoom() {
     if (!db || !user) {
-      setStatus("Firebase is not ready.");
+      setStatus(
+        "Firebase is not ready."
+      );
       return;
     }
 
     try {
-      // Generate code FIRST.
-      const roomCode = generateRoomCode();
+      let roomCode =
+        generateRoomCode();
 
-      // Validate BEFORE using Firestore.
-      if (!/^[A-Z0-9]{6}$/.test(roomCode)) {
-        setStatus("Could not generate room code.");
+      let attempts = 0;
+
+      while (
+        attempts < 5
+      ) {
+        const roomRef =
+          doc(
+            db,
+            "games",
+            roomCode
+          );
+
+        const existing =
+          await getDoc(roomRef);
+
+        if (!existing.exists()) {
+          break;
+        }
+
+        roomCode =
+          generateRoomCode();
+
+        attempts++;
+      }
+
+      if (!isValidRoom(roomCode)) {
+        setStatus(
+          "Could not create room."
+        );
         return;
       }
 
-      const roomRef = doc(
-        db,
-        "games",
-        roomCode
-      );
+      const roomRef =
+        doc(
+          db,
+          "games",
+          roomCode
+        );
 
-      await setDoc(roomRef, {
-        board: EMPTY_BOARD,
-        turn: "X",
-        status: "waiting",
-        host: user.uid,
-        guest: null,
-        result: null,
-        createdAt: serverTimestamp(),
-      });
+      await setDoc(
+        roomRef,
+        {
+          board:
+            EMPTY_BOARD.slice(),
+          turn: "X",
+          status: "waiting",
+          host: user.uid,
+          guest: null,
+          result: null,
+          createdAt:
+            serverTimestamp(),
+        }
+      );
 
       setRoom(roomCode);
       setMyMark("X");
-      setBoard(EMPTY_BOARD);
+
+      setBoard(
+        EMPTY_BOARD.slice()
+      );
+
       setTurn("X");
-      setStatus("WAITING FOR OPPONENT");
+
+      setStatus(
+        "WAITING FOR OPPONENT"
+      );
+
       setMode("online");
     } catch (error) {
-      console.error("Create room error:", error);
-      setStatus("Could not create room.");
+      console.error(
+        "Create room error:",
+        error
+      );
+
+      setStatus(
+        "Could not create room."
+      );
     }
   }
 
-  // ============================================================
-  // JOIN ROOM
-  // ============================================================
-  async function joinRoom(roomCode = room) {
+  /* ============================================================
+     JOIN ROOM
+  ============================================================ */
+
+  async function joinRoom(
+    roomCode
+  ) {
     if (!db || !user) {
-      setStatus("Firebase is not ready.");
+      setStatus(
+        "Firebase is not ready."
+      );
       return;
     }
 
-    const cleanRoom = roomCode
-      .trim()
-      .toUpperCase();
+    const cleanRoom =
+      (roomCode || room)
+        .trim()
+        .toUpperCase();
 
-    // IMPORTANT: Never access games until this is valid.
-    if (!/^[A-Z0-9]{6}$/.test(cleanRoom)) {
-      setStatus("ENTER A VALID 6-CHARACTER ROOM CODE");
+    if (
+      !isValidRoom(cleanRoom)
+    ) {
+      setStatus(
+        "ENTER A VALID 6-CHARACTER ROOM CODE"
+      );
       return;
     }
 
     try {
-      const roomRef = doc(
-        db,
-        "games",
-        cleanRoom
-      );
+      const roomRef =
+        doc(
+          db,
+          "games",
+          cleanRoom
+        );
 
-      const snapshot = await getDoc(roomRef);
+      const snapshot =
+        await getDoc(roomRef);
 
       if (!snapshot.exists()) {
-        setStatus("ROOM NOT FOUND");
+        setStatus(
+          "ROOM NOT FOUND"
+        );
         return;
       }
 
-      const game = snapshot.data();
+      const game =
+        snapshot.data();
 
-      // Host opening their own room
-      if (game.host === user.uid) {
+      if (
+        game.host === user.uid
+      ) {
         setMyMark("X");
       } else {
-        // Room already has another guest
         if (
           game.guest &&
           game.guest !== user.uid
         ) {
-          setStatus("ROOM FULL");
+          setStatus(
+            "ROOM FULL"
+          );
           return;
         }
 
-        await updateDoc(roomRef, {
-          guest: user.uid,
-          status: "playing",
-        });
+        await updateDoc(
+          roomRef,
+          {
+            guest: user.uid,
+            status: "playing",
+          }
+        );
 
         setMyMark("O");
       }
 
       setRoom(cleanRoom);
+
       setBoard(
         Array.isArray(game.board)
           ? game.board
-          : EMPTY_BOARD
+          : EMPTY_BOARD.slice()
       );
-      setTurn(game.turn || "X");
+
+      setTurn(
+        game.turn || "X"
+      );
+
       setMode("online");
+
       setStatus(
-        game.guest || game.host === user.uid
-          ? "LIVE MATCH"
-          : "JOINING..."
+        "LIVE MATCH"
       );
     } catch (error) {
-      console.error("Join room error:", error);
-      setStatus("Unable to join this room.");
+      console.error(
+        "Join room error:",
+        error
+      );
+
+      setStatus(
+        "Unable to join this room."
+      );
     }
   }
 
-  // ============================================================
-  // ONLINE MOVE
-  // ============================================================
-  async function makeOnlineMove(index) {
-    // HARD SAFETY CHECK
+  /* ============================================================
+     ONLINE MOVE
+  ============================================================ */
+
+  async function makeOnlineMove(
+    index
+  ) {
     if (
       !db ||
       !user ||
       !room ||
-      !/^[A-Z0-9]{6}$/.test(room)
+      !isValidRoom(room)
     ) {
-      setStatus("Invalid room.");
+      setStatus(
+        "INVALID ROOM"
+      );
       return;
     }
 
@@ -542,120 +809,185 @@ export default function App() {
     }
 
     try {
-      const roomRef = doc(
-        db,
-        "games",
-        room
-      );
+      const roomRef =
+        doc(
+          db,
+          "games",
+          room
+        );
 
-      // Read latest Firebase state before moving.
-      const snapshot = await getDoc(roomRef);
+      const snapshot =
+        await getDoc(roomRef);
 
       if (!snapshot.exists()) {
-        setStatus("ROOM NOT FOUND");
+        setStatus(
+          "ROOM NOT FOUND"
+        );
         return;
       }
 
-      const game = snapshot.data();
+      const game =
+        snapshot.data();
 
-      const latestBoard = Array.isArray(
-        game.board
-      )
-        ? game.board
-        : EMPTY_BOARD;
+      const latestBoard =
+        Array.isArray(game.board)
+          ? game.board
+          : EMPTY_BOARD.slice();
 
-      const latestTurn = game.turn || "X";
+      const latestTurn =
+        game.turn || "X";
 
-      // Prevent stale clients from making invalid moves.
       if (
-        latestTurn !== myMark ||
+        game.status !==
+        "playing"
+      ) {
+        return;
+      }
+
+      if (
+        latestTurn !== myMark
+      ) {
+        return;
+      }
+
+      if (
         latestBoard[index]
       ) {
         return;
       }
 
-      const nextBoard = [...latestBoard];
+      const nextBoard =
+        latestBoard.slice();
 
-      nextBoard[index] = myMark;
+      nextBoard[index] =
+        myMark;
 
-      const gameResult = getWinner(nextBoard);
+      const gameResult =
+        getWinner(nextBoard);
 
-      let firebaseResult = null;
+      let firebaseResult =
+        null;
 
-if (gameResult === "draw") {
-  firebaseResult = "DRAW";
-} else if (gameResult === "X" || gameResult === "O") {
-  firebaseResult = gameResult + " WINS";
-}
+      if (
+        gameResult ===
+        "draw"
+      ) {
+        firebaseResult =
+          "DRAW";
+      } else if (
+        gameResult === "X" ||
+        gameResult === "O"
+      ) {
+        firebaseResult =
+          gameResult +
+          " WINS";
+      }
 
-await updateDoc(roomRef, {
-  board: nextBoard,
-  turn: gameResult ? myMark : (myMark === "X" ? "O" : "X"),
-  status: gameResult ? "done" : "playing",
-  result: firebaseResult,
-  lastMove: index,
-  lastMoveAt: serverTimestamp(),
-});
+      let nextTurn =
+        myMark === "X"
+          ? "O"
+          : "X";
 
       if (gameResult) {
-        await saveResult(
-          gameResult === myMark
-            ? "win"
-            : gameResult === "draw"
-            ? "draw"
-            : "loss"
-        );
+        nextTurn =
+          myMark;
       }
+
+      await updateDoc(
+        roomRef,
+        {
+          board: nextBoard,
+          turn: nextTurn,
+          status: gameResult
+            ? "done"
+            : "playing",
+          result:
+            firebaseResult,
+          lastMove: index,
+          lastMoveAt:
+            serverTimestamp(),
+        }
+      );
     } catch (error) {
-      console.error("Move error:", error);
-      setStatus("Move could not be sent.");
+      console.error(
+        "Online move error:",
+        error
+      );
+
+      setStatus(
+        "Move could not be sent."
+      );
     }
   }
 
-  // ============================================================
-  // REMATCH
-  // ============================================================
+  /* ============================================================
+     REMATCH
+  ============================================================ */
+
   async function rematch() {
     if (mode === "online") {
       if (
         !db ||
         !room ||
-        !/^[A-Z0-9]{6}$/.test(room)
+        !isValidRoom(room)
       ) {
-        setStatus("Invalid room.");
+        setStatus(
+          "INVALID ROOM"
+        );
         return;
       }
 
       try {
         await updateDoc(
-          doc(db, "games", room),
+          doc(
+            db,
+            "games",
+            room
+          ),
           {
-            board: EMPTY_BOARD,
+            board:
+              EMPTY_BOARD.slice(),
             turn: "X",
             status: "playing",
             result: null,
             lastMove: null,
           }
         );
+
+        setStatus(
+          "NEW ROUND"
+        );
       } catch (error) {
-        console.error("Rematch error:", error);
-        setStatus("Could not start rematch.");
+        console.error(
+          "Rematch error:",
+          error
+        );
+
+        setStatus(
+          "Could not start rematch."
+        );
       }
 
       return;
     }
 
-    setBoard(EMPTY_BOARD);
+    setBoard(
+      EMPTY_BOARD.slice()
+    );
+
     setTurn("X");
     setStatus("");
   }
 
-  // ============================================================
-  // GOOGLE AUTH
-  // ============================================================
+  /* ============================================================
+     GOOGLE LOGIN
+  ============================================================ */
+
   async function googleLogin() {
     if (!auth) {
-      setStatus("Firebase is not configured.");
+      setStatus(
+        "Firebase is not configured."
+      );
       return;
     }
 
@@ -663,7 +995,10 @@ await updateDoc(roomRef, {
       const provider =
         new GoogleAuthProvider();
 
-      if (user?.isAnonymous) {
+      if (
+        user &&
+        user.isAnonymous
+      ) {
         await linkWithPopup(
           user,
           provider
@@ -675,40 +1010,60 @@ await updateDoc(roomRef, {
         );
       }
 
-      setStatus("GOOGLE PROFILE SAVED");
-    } catch (error) {
-      console.error("Google login error:", error);
       setStatus(
-        error.code || "Google login failed."
+        "GOOGLE PROFILE SAVED"
+      );
+    } catch (error) {
+      console.error(
+        "Google login error:",
+        error
+      );
+
+      setStatus(
+        "Google login failed."
       );
     }
   }
 
-  // ============================================================
-  // LEADERBOARD
-  // ============================================================
+  /* ============================================================
+     LEADERBOARD
+  ============================================================ */
+
   async function loadLeaderboard() {
     if (!db) {
-      setStatus("Firebase is not configured.");
+      setStatus(
+        "Firebase is not configured."
+      );
       return;
     }
 
     try {
-      const playersQuery = query(
-        collection(db, "players"),
-        orderBy("stats.wins", "desc"),
-        limit(10)
-      );
+      const playersQuery =
+        query(
+          collection(
+            db,
+            "players"
+          ),
+          orderBy(
+            "stats.wins",
+            "desc"
+          ),
+          limit(10)
+        );
 
       const snapshot =
-        await getDocs(playersQuery);
+        await getDocs(
+          playersQuery
+        );
 
-      setLeaders(
-        snapshot.docs.map((item) =>
-          item.data()
-        )
-      );
+      const rows =
+        snapshot.docs.map(
+          function (item) {
+            return item.data();
+          }
+        );
 
+      setLeaders(rows);
       setMode("leaders");
     } catch (error) {
       console.error(
@@ -722,33 +1077,60 @@ await updateDoc(roomRef, {
     }
   }
 
+  /* ============================================================
+     INVITE LINK
+  ============================================================ */
+
   const inviteLink =
     room &&
-    /^[A-Z0-9]{6}$/.test(room)
-      ? `${window.location.origin}${window.location.pathname}?room=${room}`
+    isValidRoom(room)
+      ? window.location.origin +
+        window.location.pathname +
+        "?room=" +
+        room
       : "";
 
   function copyInvite() {
-    if (!inviteLink) return;
+    if (!inviteLink) {
+      return;
+    }
+
+    if (
+      !navigator.clipboard
+    ) {
+      setStatus(
+        "Copy is not supported."
+      );
+      return;
+    }
 
     navigator.clipboard
-      ?.writeText(inviteLink)
-      .then(() => {
-        setCopied(true);
+      .writeText(inviteLink)
+      .then(
+        function () {
+          setCopied(true);
 
-        setTimeout(
-          () => setCopied(false),
-          1200
-        );
-      })
-      .catch(() => {
-        setStatus("Could not copy link.");
-      });
+          setTimeout(
+            function () {
+              setCopied(false);
+            },
+            1200
+          );
+        }
+      )
+      .catch(
+        function () {
+          setStatus(
+            "Could not copy link."
+          );
+        }
+      );
   }
 
-  // ============================================================
-  // HOME
-  // ============================================================
+  /* ============================================================
+     HOME
+  ============================================================ */
+
   if (mode === "home") {
     return (
       <Home
@@ -756,13 +1138,15 @@ await updateDoc(roomRef, {
         setName={setName}
         google={googleLogin}
         stats={stats}
-        bot={() => {
-          setBoard(EMPTY_BOARD);
+        bot={function () {
+          setBoard(
+            EMPTY_BOARD.slice()
+          );
           setTurn("X");
-          setStatus("");
+          setStatus("YOUR TURN");
           setMode("bot");
         }}
-        online={() => {
+        online={function () {
           setRoom("");
           setStatus("");
           setMode("join");
@@ -773,53 +1157,77 @@ await updateDoc(roomRef, {
     );
   }
 
-  // ============================================================
-  // LEADERBOARD
-  // ============================================================
+  /* ============================================================
+     LEADERBOARD
+  ============================================================ */
+
   if (mode === "leaders") {
     return (
       <main>
         <Top
           title="LEADERBOARD"
-          back={() => setMode("home")}
+          back={function () {
+            setMode("home");
+          }}
         />
 
         <section className="card leaders">
-          <h1>TOP PLAYERS</h1>
+          <h1>
+            TOP PLAYERS
+          </h1>
 
-          {leaders.length ? (
-            leaders.map((player, index) => (
-              <div
-                className="rank"
-                key={index}
-              >
-                <span>
-                  #{index + 1}{" "}
-                  {player.name || "PLAYER"}
-                </span>
+          {leaders.length >
+          0 ? (
+            leaders.map(
+              function (
+                player,
+                index
+              ) {
+                return (
+                  <div
+                    className="rank"
+                    key={index}
+                  >
+                    <span>
+                      #
+                      {index +
+                        1}{" "}
+                      {player.name ||
+                        "PLAYER"}
+                    </span>
 
-                <b>
-                  {player.stats?.wins || 0} W
-                </b>
-              </div>
-            ))
+                    <b>
+                      {player.stats
+                        ?.wins ||
+                        0}{" "}
+                      W
+                    </b>
+                  </div>
+                );
+              }
+            )
           ) : (
-            <p>NO SAVED PLAYERS YET</p>
+            <p>
+              NO SAVED PLAYERS YET
+            </p>
           )}
         </section>
       </main>
     );
   }
 
-  // ============================================================
-  // JOIN / CREATE SCREEN
-  // ============================================================
+  /* ============================================================
+     JOIN SCREEN
+  ============================================================ */
+
   if (mode === "join") {
     return (
       <main>
         <Top
           title="ONLINE MATCH"
-          back={() => setMode("home")}
+          back={function () {
+            setMode("home");
+          }}
         />
 
         <section className="card join">
@@ -830,18 +1238,25 @@ await updateDoc(roomRef, {
           <input
             value={room}
             maxLength={6}
-            onChange={(event) =>
+            onChange={function (
+              event
+            ) {
               setRoom(
                 event.target.value
                   .toUpperCase()
-                  .replace(/[^A-Z0-9]/g, "")
-              )
-            }
+                  .replace(
+                    /[^A-Z0-9]/g,
+                    ""
+                  )
+              );
+            }}
             placeholder="ROOM CODE"
           />
 
           <button
-            onClick={() => joinRoom()}
+            onClick={function () {
+              joinRoom();
+            }}
           >
             JOIN ROOM
           </button>
@@ -852,7 +1267,9 @@ await updateDoc(roomRef, {
 
           <button
             className="alt"
-            onClick={createRoom}
+            onClick={
+              createRoom
+            }
           >
             CREATE ROOM
           </button>
@@ -865,15 +1282,16 @@ await updateDoc(roomRef, {
     );
   }
 
-  // ============================================================
-  // GAME
-  // ============================================================
+  /* ============================================================
+     GAME
+  ============================================================ */
+
   return (
     <Game
       title={
         mode === "bot"
           ? "PRO BOT"
-          : `ONLINE // ${room}`
+          : "ONLINE // " + room
       }
       board={board}
       turn={turn}
@@ -885,7 +1303,9 @@ await updateDoc(roomRef, {
           ? playBot
           : makeOnlineMove
       }
-      onBack={() => setMode("home")}
+      onBack={function () {
+        setMode("home");
+      }}
       rematch={rematch}
       link={
         mode === "online"
@@ -898,17 +1318,24 @@ await updateDoc(roomRef, {
   );
 }
 
-// ============================================================
-// HEADER
-// ============================================================
-function Top({ title, back }) {
+/* ============================================================
+   TOP BAR
+============================================================ */
+
+function Top({
+  title,
+  back,
+}) {
   return (
     <header>
       <b>
-        ✦ XOX<span>NEON</span>
+        ✦ XOX
+        <span>NEON</span>
       </b>
 
-      <strong>{title}</strong>
+      <strong>
+        {title}
+      </strong>
 
       <button
         className="back"
@@ -920,9 +1347,10 @@ function Top({ title, back }) {
   );
 }
 
-// ============================================================
-// HOME UI
-// ============================================================
+/* ============================================================
+   HOME
+============================================================ */
+
 function Home({
   name,
   setName,
@@ -937,7 +1365,8 @@ function Home({
     <main>
       <header>
         <b>
-          ✦ XOX<span>NEON</span>
+          ✦ XOX
+          <span>NEON</span>
         </b>
 
         <small>
@@ -955,15 +1384,20 @@ function Home({
         </h1>
 
         <p>
-          OUTPLAY. OUTTHINK. DOMINATE.
+          OUTPLAY. OUTTHINK.
+          DOMINATE.
         </p>
 
         <div className="buttons">
-          <button onClick={bot}>
+          <button
+            onClick={bot}
+          >
             ⚡ PRO BOT
           </button>
 
-          <button onClick={online}>
+          <button
+            onClick={online}
+          >
             ◈ ONLINE MATCH
           </button>
         </div>
@@ -984,9 +1418,13 @@ function Home({
 
           <input
             value={name}
-            onChange={(event) =>
-              setName(event.target.value)
-            }
+            onChange={function (
+              event
+            ) {
+              setName(
+                event.target.value
+              );
+            }}
             placeholder="Enter name to save stats"
           />
         </div>
@@ -1000,18 +1438,33 @@ function Home({
 
         <div className="stats">
           <div>
-            <b>{stats.wins}</b>
-            <small>WINS</small>
+            <b>
+              {stats.wins}
+            </b>
+
+            <small>
+              WINS
+            </small>
           </div>
 
           <div>
-            <b>{stats.losses}</b>
-            <small>LOSSES</small>
+            <b>
+              {stats.losses}
+            </b>
+
+            <small>
+              LOSSES
+            </small>
           </div>
 
           <div>
-            <b>{stats.draws}</b>
-            <small>DRAWS</small>
+            <b>
+              {stats.draws}
+            </b>
+
+            <small>
+              DRAWS
+            </small>
           </div>
         </div>
 
@@ -1025,9 +1478,10 @@ function Home({
   );
 }
 
-// ============================================================
-// GAME UI
-// ============================================================
+/* ============================================================
+   GAME
+============================================================ */
+
 function Game({
   title,
   board,
@@ -1069,30 +1523,39 @@ function Game({
           </strong>
 
           <span>
-            TURN <b>{turn}</b>
+            TURN{" "}
+            <b>{turn}</b>
           </span>
         </div>
 
         <div className="board">
-          {board.map((value, index) => (
-            <button
-              key={index}
-              disabled={
-                !!value ||
-                !!result
-              }
-              onClick={() =>
-                onCell(index)
-              }
-              className={
-                value
-                  ? `cell ${value.toLowerCase()}`
-                  : ""
-              }
-            >
-              {value}
-            </button>
-          ))}
+          {board.map(
+            function (
+              value,
+              index
+            ) {
+              return (
+                <button
+                  key={index}
+                  disabled={
+                    !!value ||
+                    !!result
+                  }
+                  onClick={function () {
+                    onCell(index);
+                  }}
+                  className={
+                    value
+                      ? "cell " +
+                        value.toLowerCase()
+                      : "cell"
+                  }
+                >
+                  {value}
+                </button>
+              );
+            }
+          )}
         </div>
 
         {link && (
