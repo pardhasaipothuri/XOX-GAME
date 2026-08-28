@@ -580,23 +580,22 @@ export default function App() {
 
       const gameResult = getWinner(nextBoard);
 
-      await updateDoc(roomRef, {
-        board: nextBoard,
-        turn:
-          myMark === "X"
-            ? "O"
-            : "X",
-        status: gameResult
-          ? "done"
-          : "playing",
-        result: gameResult
-          ? gameResult === "draw"
-            ? "DRAW"
-            : `${gameResult} WINS`
-          : null,
-        lastMove: index,
-        lastMoveAt: serverTimestamp(),
-      });
+      let firebaseResult = null;
+
+if (gameResult === "draw") {
+  firebaseResult = "DRAW";
+} else if (gameResult === "X" || gameResult === "O") {
+  firebaseResult = gameResult + " WINS";
+}
+
+await updateDoc(roomRef, {
+  board: nextBoard,
+  turn: gameResult ? myMark : (myMark === "X" ? "O" : "X"),
+  status: gameResult ? "done" : "playing",
+  result: firebaseResult,
+  lastMove: index,
+  lastMoveAt: serverTimestamp(),
+});
 
       if (gameResult) {
         await saveResult(
